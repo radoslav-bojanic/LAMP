@@ -7,6 +7,7 @@ typedef struct LampState
     uint8_t smallLamp;
 } LampState_ts;
 
+
 static LampState_ts LampState_s = 
 {
     .bigLamp = LAMP_OFF,
