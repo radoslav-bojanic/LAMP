@@ -29,10 +29,13 @@
 #define STR(x)    _STR(x)
 
 #define DEVICE_MODEL_JSON \
-"{\"device\":\"" LAMP_NAME "\",\"version\":1,\"service\":\"" STR(LAMP_GATT_SERVICE) "\",\"components\":[" \
-"{\"name\":\"" BIG_LAMP_NAME "\",\"type\":\"" BIG_LAMP_TYPE "\",\"char\":\"" STR(BIG_LAMP_GATT_CHAR) "\"}," \
-"{\"name\":\"" SMALL_LAMP_NAME "\",\"type\":\"" SMALL_LAMP_TYPE "\",\"char\":\"" STR(SMALL_LAMP_GATT_CHAR) "\"}," \
-"{\"name\":\"" ENABLE_RANGING_NAME "\",\"type\":\"" ENABLE_RANGING_TYPE "\",\"char\":\"" STR(ENABLE_RANGING_CHAR) "\"}" \
+"{\"device\":\"" LAMP_NAME "\",\"version\":1,\"service\":\"" STR(LAMP_GATT_SERVICE) "\",\"characteristics\":[" \
+"{\"char\":\"" STR(BIG_LAMP_GATT_CHAR) "\",\"name\":\"" BIG_LAMP_NAME "\",\"format\":\"bool\",\"control\":\"switch\"}," \
+"{\"char\":\"" STR(SMALL_LAMP_GATT_CHAR) "\",\"name\":\"" SMALL_LAMP_NAME "\",\"format\":\"bool\",\"control\":\"switch\"}," \
+"{\"char\":\"" STR(ENABLE_RANGING_CHAR) "\",\"name\":\"" ENABLE_RANGING_NAME "\",\"format\":\"bitfield\",\"control\":\"bitfield\",\"bits\":[" \
+"{\"bit\":0,\"name\":\"" BIG_LAMP_NAME "\"}," \
+"{\"bit\":1,\"name\":\"" SMALL_LAMP_NAME "\"}" \
+"]}" \
 "]}"
 
 #endif

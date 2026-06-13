@@ -89,9 +89,32 @@ static void ProcessRssi(void)
     static uint8_t      far_count     = 0u;
     static uint8_t      missed_count  = 0u;
 
-    if (EnableRanging == NO_RANGING || EnableRanging == LAMP_UNUSED)
+    /* Any lamp off or ranging disabled, assume no user presence for robustness */
+    bool ranging_active = false;
+
+    if (EnableRanging & ENABLE_RANGING_BIG_LAMP_BIT)
     {
-        return;
+        ranging_active = true;
+
+        if (LampControl_GetBigLamp() == LAMP_OFF)
+        {
+            user_present = 0u;
+        }
+    }
+
+    if (EnableRanging & ENABLE_RANGING_SMALL_LAMP_BIT)
+    {
+        ranging_active = true;
+
+        if (LampControl_GetSmallLamp() == LAMP_OFF)
+        {
+            user_present = 0u;
+        }
+    }
+
+    if (!ranging_active)
+    {
+        user_present = 0u;
     }
 
     /* enforce fixed sample interval */

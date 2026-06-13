@@ -359,6 +359,7 @@ static int lamp_access_cb(uint16_t conn_handle,
             if (ctxt->om->om_len < 1) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
             ranging_enabled = ctxt->om->om_data[0];
             ESP_LOGI("LAMP", "ENABLE_RANGING WRITE: %d", ranging_enabled);
+            Ble_ScheduleNotify(ranging_val_handle, ranging_enabled);
             App_EnableRanging(ranging_enabled);
             return 0;
 
