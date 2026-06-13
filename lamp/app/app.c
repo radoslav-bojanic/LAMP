@@ -16,6 +16,13 @@
 #define RSSI_TX_POWER   (-48)   // calibrate: measure RSSI while standing 1m from ESP
 #define RSSI_PATH_LOSS  (3.0f)  // 2.0 free space, 2.5-3.0 indoors
 
+#define RSSI_SAMPLE_INTERVAL_MS     (100u)
+#define PRESENCE_CONFIRM_COUNT      (5u)    /* N consecutive samples to confirm state change */
+#define DISTANCE_CLOSE_M            (3.0f)
+#define DISTANCE_FAR_M              (6.0f)  /* tighter gap — was 3m to 7m */
+#define RSSI_MISSED_MAX             (3u)    /* tolerate N missed reads before resetting */
+
+
 typedef struct LampStateChangedNotif
 {
     LampType_e LampType;
@@ -49,88 +56,128 @@ static float Rssi_ToDistance(int8_t rssi);
 static void AppTask(void *pvParameters)
 {
     (void)pvParameters;
-    LampStateChangedNotif_ts LampStateChangedNotif_s;
-    for(;;)
+    LampStateChangedNotif_ts notif;
+
+    for (;;)
     {
-        if (xQueueReceive(LampStateChangedQueue, &LampStateChangedNotif_s, pdMS_TO_TICKS(80)) == pdTRUE)
+        /* drain queue without blocking so RSSI samples at fixed rate */
+        while (xQueueReceive(LampStateChangedQueue, &notif, 0) == pdTRUE)
         {
-            switch(LampStateChangedNotif_s.LampType)
+            switch (notif.LampType)
             {
-                case BigLamp:
-                {
-                    LampControl_SetBigLamp(LampStateChangedNotif_s.LampValue);
-                    break;
-                }
-                case SmallLamp:
-                {
-                    LampControl_SetSmallLamp(LampStateChangedNotif_s.LampValue);
-                    break;
-                }
-                default:
-                {
-                    /* No lamp change case */
-                    break;
-                }
+            case BigLamp:   LampControl_SetBigLamp(notif.LampValue);   break;
+            case SmallLamp: LampControl_SetSmallLamp(notif.LampValue); break;
+            default: break;
             }
 
-            if(LampStateChangedNotif_s.EnableRanging != LAMP_UNUSED)
+            if (notif.EnableRanging != LAMP_UNUSED)
             {
-                EnableRanging = LampStateChangedNotif_s.EnableRanging;
-                ESP_LOGI(APP_TASK_NAME, "Ranging changed to %d", LampStateChangedNotif_s.EnableRanging);
+                EnableRanging = notif.EnableRanging;
+                ESP_LOGI(APP_TASK_NAME, "Ranging changed to %d", notif.EnableRanging);
             }
-            ESP_LOGI(APP_TASK_NAME, "LampStateChangedReceived");
         }
 
         ProcessRssi();
+        vTaskDelay(pdMS_TO_TICKS(20));  /* ~50Hz loop, RSSI_SAMPLE_INTERVAL controls actual rate */
     }
 }
 
 static void ProcessRssi(void)
 {
+    static TickType_t   last_sample   = 0;
+    static uint8_t      close_count   = 0u;
+    static uint8_t      far_count     = 0u;
+    static uint8_t      missed_count  = 0u;
 
-    if ((EnableRanging == LAMP_UNUSED) || (EnableRanging == NO_RANGING))
+    if (EnableRanging == NO_RANGING || EnableRanging == LAMP_UNUSED)
     {
         return;
     }
+
+    /* enforce fixed sample interval */
+    TickType_t now = xTaskGetTickCount();
+    if ((now - last_sample) < pdMS_TO_TICKS(RSSI_SAMPLE_INTERVAL_MS))
+    {
+        return;
+    }
+    last_sample = now;
 
     int8_t raw;
     if (!Ble_GetRssi(&raw))
     {
-        s_rssi_init = false;
+        missed_count++;
+        if (missed_count >= RSSI_MISSED_MAX)
+        {
+            /* phone genuinely gone, reset filter on next valid read */
+            s_rssi_init  = false;
+            missed_count = 0u;
+            close_count  = 0u;
+            far_count    = 0u;
+        }
         return;
     }
+    missed_count = 0u;
 
     if (!s_rssi_init)
     {
         Kalman_Init(&s_kalman, (float)raw);
         s_rssi_init = true;
+        return;  /* skip this sample, let filter settle */
     }
 
-    float filtered = Kalman_Update(&s_kalman, (float)raw);
-    int8_t rssi    = (int8_t)filtered;
+    float   filtered = Kalman_Update(&s_kalman, (float)raw);
+    float   distance = Rssi_ToDistance((int8_t)filtered);
 
-    if((Rssi_ToDistance(rssi) < 3) && (user_present == 0))
+    ESP_LOGD(APP_TASK_NAME, "RSSI raw=%d filtered=%.1f dist=%.2fm", raw, filtered, distance);
+
+    if (user_present == 0u)
     {
-        ESP_LOGI(APP_TASK_NAME, "User close");
-        user_present = 1;
-        App_SetLampState(BigLamp, LAMP_ON);
-    }
-    else if((Rssi_ToDistance(rssi) > 7) && (user_present == 1))
-    {
-        ESP_LOGI(APP_TASK_NAME, "User far");
-        user_present = 0;
-        App_SetLampState(BigLamp, LAMP_OFF);
+        /* looking for close */
+        if (distance < DISTANCE_CLOSE_M)
+        {
+            close_count++;
+            far_count = 0u;
+            if (close_count >= PRESENCE_CONFIRM_COUNT)
+            {
+                close_count  = 0u;
+                user_present = 1u;
+                ESP_LOGI(APP_TASK_NAME, "User close dist=%.2fm", distance);
+                if (EnableRanging & ENABLE_RANGING_BIG_LAMP_BIT)   App_SetLampState(BigLamp,   LAMP_ON);
+                if (EnableRanging & ENABLE_RANGING_SMALL_LAMP_BIT) App_SetLampState(SmallLamp, LAMP_ON);
+            }
+        }
+        else
+        {
+            close_count = 0u;
+        }
     }
     else
     {
-        /* Hysteresis not reached*/
+        /* looking for far */
+        if (distance > DISTANCE_FAR_M)
+        {
+            far_count++;
+            close_count = 0u;
+            if (far_count >= PRESENCE_CONFIRM_COUNT)
+            {
+                far_count    = 0u;
+                user_present = 0u;
+                ESP_LOGI(APP_TASK_NAME, "User far dist=%.2fm", distance);
+                if (EnableRanging & ENABLE_RANGING_BIG_LAMP_BIT)   App_SetLampState(BigLamp,   LAMP_OFF);
+                if (EnableRanging & ENABLE_RANGING_SMALL_LAMP_BIT) App_SetLampState(SmallLamp, LAMP_OFF);
+            }
+        }
+        else
+        {
+            far_count = 0u;
+        }
     }
 }
 
 static void Kalman_Init(KalmanFilter_ts *kf, float initial_rssi)
 {
-    kf->q = 0.1f;           // low = trust model, high = trust measurement
-    kf->r = 2.0f;           // typical BLE RSSI noise variance
+    kf->q = 0.5f;           // low = trust model, high = trust measurement
+    kf->r = 5.0f;           // typical BLE RSSI noise variance
     kf->p = 1.0f;           // initial uncertainty
     kf->x = initial_rssi;
 }
